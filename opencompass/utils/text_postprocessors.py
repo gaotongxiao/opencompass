@@ -86,3 +86,16 @@ def last_option_postprocess(text: str, options: str) -> str:
     if match:
         return match[-1]
     return ''
+
+
+def first_number_postprocess(text: str) -> float:
+    """Return the first number in a string."""
+    # regex pattern to match numbers (both integers and decimals)
+    pattern = r'(-?\d*\.?\d+)'
+
+    print(text)
+    # search the string for the pattern
+    match = re.search(pattern, text)
+
+    # if a match is found, return it. Otherwise, return None.
+    return float(match.group(1)) if match else None

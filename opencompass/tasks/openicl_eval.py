@@ -1,6 +1,7 @@
 import argparse
 import fnmatch
 import os.path as osp
+import random
 import time
 from collections import Counter
 from typing import Optional
@@ -9,6 +10,7 @@ import mmengine
 from mmengine.config import Config, ConfigDict
 from mmengine.utils import mkdir_or_exist
 
+from opencompass.openicl.icl_evaluator.lm_evaluator import LMEvaluator
 from opencompass.registry import (ICL_EVALUATORS, MODELS, TASKS,
                                   TEXT_POSTPROCESSORS)
 from opencompass.tasks.base import BaseTask
@@ -29,14 +31,31 @@ class OpenICLEvalTask(BaseTask):
     log_subdir = 'logs/eval'
     output_subdir = 'results'
 
-    def __init__(self, cfg: ConfigDict):
+    def __init__(self, cfg: ConfigDict, judge_cfg: ConfigDict = {}):
         super().__init__(cfg)
-        self.num_gpus = 0
+        run_cfg = judge_cfg.get('run_cfg', {})
+        self.num_gpus = run_cfg.get('num_gpus', 0)
+        self.num_procs = run_cfg.get('num_procs', 1)
+        self.judge_cfg = judge_cfg
         self.logger = get_logger()
 
     def get_command(self, cfg_path, template):
+        """Get the command template for the task.
+
+        Args:
+            cfg_path (str): The path to the config file of the task.
+            template (str): The template which have '{task_cmd}' to format
+                the command.
+        """
         script_path = __file__
-        command = f'python3 {script_path} {cfg_path}'
+        if self.num_gpus > 0:
+            port = random.randint(12000, 32000)
+            command = (f'torchrun --master_port={port} '
+                       f'--nproc_per_node {self.num_procs} '
+                       f'{script_path} {cfg_path}')
+        else:
+            command = f'python {script_path} {cfg_path}'
+
         return template.format(task_cmd=command)
 
     def run(self):
@@ -155,9 +174,18 @@ class OpenICLEvalTask(BaseTask):
                     Counter(s).most_common(1)[0][0] for s in pred_strs
                 ]
 
+            eval_type = self.eval_cfg['evaluator'].type
+            if isinstance(eval_type, str):
+                eval_type = TASKS.get(eval_type)
+            if eval_type == LMEvaluator:
+                self.eval_cfg['evaluator']['model_cfg'] = self.judge_cfg
             icl_evaluator = ICL_EVALUATORS.build(self.eval_cfg['evaluator'])
-            result = icl_evaluator.score(
-                predictions=pred_strs, references=test_set[self.output_column])
+            if self.output_column:
+                result = icl_evaluator.score(
+                    predictions=pred_strs,
+                    references=test_set[self.output_column])
+            else:
+                result = icl_evaluator.score(predictions=pred_strs)
 
         if 'error' in result:
             self.logger.error(
